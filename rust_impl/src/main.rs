@@ -12,7 +12,14 @@
 #![no_std]
 #![no_main]
 
-use hal::pwm::B;
+
+use heapless::String;
+use core::fmt::Write;
+// use embedded_hal::serial::Write;
+
+
+
+use hal::{pwm::B, Timer};
 // The macro for our start-up function
 use rp_pico::entry;
 
@@ -34,62 +41,11 @@ use usb_device::{class_prelude::*, prelude::*};
 // USB Communications Class Device support
 use usbd_serial::SerialPort;
 
-
-
-
-fn write_serial(serial: &mut SerialPort<hal::usb::UsbBus>, buf: &str, block: bool) {
-    let write_ptr = buf.as_bytes();
-
-    // Because the buffer is of constant size and initialized to zero (0) we here
-    // add a test to determine the size that's really occupied by the str that we
-    // wan't to send. From index zero to first byte that is as the zero byte value.
-    let mut index = 0;
-    while index < write_ptr.len() && write_ptr[index] != 0 {
-        index += 1;
-    }
-    let mut write_ptr = &write_ptr[0..index];
-
-    while !write_ptr.is_empty() {
-        match serial.write(write_ptr) {
-            Ok(len) => write_ptr = &write_ptr[len..],
-            // Meaning the USB write buffer is full
-            Err(UsbError::WouldBlock) => {
-                if !block {
-                    break;
-                }
-            }
-            // On error, just drop unwritten data.
-            Err(_) => break,
-        }
-    }
-    // let _ = serial.write("\n".as_bytes());
-    let _ = serial.flush();
+/* Command implementations */
+fn read_uptime(timer: &Timer) -> u64 {
+    let uptime = timer.get_counter();
+    return uptime;
 }
-
-fn process_usb_serial_buf(
-    buf: &[u8;64], 
-    serial: &mut SerialPort<hal::usb::UsbBus>) {
-    
-    // figure out length of command
-    // let mut index = 0;
-    // while index < buf.len() && buf[index] != 0 {
-    //     index += 1;
-    // }
-    // let write_ptr = &buf[0..index];
-
-    match buf[0] {
-        // Read uptime command
-        b'1' => {
-            write_serial(serial, "read uptime request\r\n", false);
-        }
-
-        _ => {
-            // do nothing if empty
-    }
-    }
-}
-
-
 
 /// Entry point to our bare-metal application.
 ///
@@ -155,11 +111,6 @@ fn main() -> ! {
     let timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS);
     let mut said_hello = false;
     loop {
-        // A welcome message at the beginning
-        // if !said_hello && timer.get_counter() >= 2_000_000 {
-        //     said_hello = true;
-        //     let _ = serial.write(b"Hello, World!\r\n");
-        // }
 
         // Check for new data
         if usb_dev.poll(&mut [&mut serial]) {
@@ -174,14 +125,72 @@ fn main() -> ! {
                     let _ = serial.flush();
                 }
                 Ok(count) => {
-                    // Process the data we received
-                    process_usb_serial_buf(&buf, &mut serial);
+                    process_usb_serial_buf(
+                        &buf, 
+                        &mut serial,
+                        &timer);
                 }
             }
         }
     }
 }
 
+/* Process command */
+fn process_usb_serial_buf(
+    buf: &[u8;64], 
+    serial: &mut SerialPort<hal::usb::UsbBus>,
+    timer: &Timer) {
+    
+    // figure out length of command
+    let mut index = 0;
+    while index < buf.len() && buf[index] != 0 {
+        index += 1;
+    }
+    let write_ptr = &buf[0..index];
 
+    match write_ptr {
+        // Read uptime command
+        b"TBRUPTIME\r\n" => {
+            let uptime_b = read_uptime(timer);
+            let mut w: String<64> = String::new();
+
+            writeln!(&mut w, "read uptime request : {:?}\r\n", uptime_b).unwrap();
+            write_serial(serial, w, false);
+        }
+        _ => {
+            // do nothing if empty
+        }
+    }
+}
+
+fn write_serial(serial: &mut SerialPort<hal::usb::UsbBus>, buf: String<64>, block: bool) {
+    let write_ptr = buf.as_bytes();
+
+    // Because the buffer is of constant size and initialized to zero (0) we here
+    // add a test to determine the size that's really occupied by the str that we
+    // wan't to send. From index zero to first byte that is as the zero byte value.
+    let mut index = 0;
+    while index < write_ptr.len() && write_ptr[index] != 0 {
+        index += 1;
+    }
+    let mut write_ptr = &write_ptr[0..index];
+    
+
+    while !write_ptr.is_empty() {
+        match serial.write(write_ptr) {
+            Ok(len) => write_ptr = &write_ptr[len..],
+            // Meaning the USB write buffer is full
+            Err(UsbError::WouldBlock) => {
+                if !block {
+                    break;
+                }
+            }
+            // On error, just drop unwritten data.
+            Err(_) => break,
+        }
+    }
+    // let _ = serial.write("\n".as_bytes());
+    let _ = serial.flush();
+}
 
 // End of file
